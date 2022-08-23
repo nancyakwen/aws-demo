@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: An AWS Lambda application that connects to a MySQL database in the VPC to run SQL queries.
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  secretName:
+    Default: rds-mysql-admin
+    Description: Database password secret name
+    Type: String
+  databaseName:
+    Default: lambdadb
+    Description: Database name
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: Begin with a letter and use only alphanumeric characters.
+  databaseUser:
+    NoEcho: 'true'
+    Description: Database username
+    Default: admin
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: Begin with a letter and use only alphanumeric characters.
+Resources:
+  database:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: !Ref databaseName
+      AllocatedStorage: '10'
+      DBInstanceClass: db.t3.small
+      Engine: MySQL
+      EngineVersion: 5.7.26
+      MasterUsername: !Ref 'databaseUser'
+      MasterUserPassword: '{{resolve:secretsmanager:rds-mysql-admin:SecretString:password}}'
+      DeletionProtection: true
+      MultiAZ: true
+      DBSubnetGroupName: 'db-subnet-group-xxxxx'
+      VPCSecurityGroups: ['sg-xxxxx']
+  libs:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: rds-mysql-lib
+      Description: Dependencies for the rds-mysql sample app.
+      ContentUri: lib/.
+      CompatibleRuntimes:
+        - nodejs10.x
+        - nodejs12.x
+  function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dbadmin/.
+      Description: Run SQL queries.
+      MemorySize: 128
+      Timeout: 15
+      Runtime: nodejs12.x
+      Tracing: Active
+      Handler: index.handler
+      Environment:
+          Variables:
+            databaseHost: !GetAtt database.Endpoint.Address
+            databaseName: !Ref 'databaseName'
+            databaseUser: !Ref 'databaseUser'
+            databasePassword: !Sub '{{resolve:secretsmanager:${secretName}:SecretString:password}}'
+      VpcConfig:
+        SecurityGroupIds: ['sg-xxxxx']
+        SubnetIds: ['subnet-xxxxx-a', 'subnet-xxxxx-b']
+      # Function's execution role
+      Role: !GetAtt role.Arn
+      Layers:
+        - !Ref libs
+  role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: rds-iamauth
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: 'rds-db:connect'
+                Resource: '*'
+      Path: /service-role/
+
